@@ -1,7 +1,6 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
+// ==============================================================================
+// PRISMA SCHEMA - AUTONOMOUS API (Prisma ORM 7)
+// ==============================================================================
 
 generator client {
   provider = "prisma-client"
@@ -10,4 +9,471 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+// ------------------------------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------------------------------
+
+enum Role {
+  CLIENT
+  PROVIDER
+  ADMIN
+  FINANCIAL
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+// ------------------------------------------------------------------------------
+// AUTHENTICATION & CORE USERS
+// ------------------------------------------------------------------------------
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  name         String
+  phone        String?
+  role         Role       @default(CLIENT)
+  status       UserStatus @default(ACTIVE)
+
+  profile   Profile?
+  auditLogs AuditLog[]
+  cards     Card[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+// ------------------------------------------------------------------------------
+// PROFILES (CLIENTS & PROVIDERS)
+// ------------------------------------------------------------------------------
+
+model Profile {
+  id                  String    @id @default(uuid())
+  userId              String?   @unique @map("user_id")
+  user                User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role                String    @default("client") // 'client' | 'professional' | 'admin'
+  name                String
+  phone               String?
+  avatarUrl           String?   @map("avatar_url")
+  gender              String?
+  birthDate           DateTime? @map("birth_date") @db.Date
+  workArea            String?   @map("work_area")
+  autoAcceptMessage   String?   @map("auto_accept_message")
+  bio                 String?
+  workDescription     String?   @map("work_description")
+  experienceTime      String?   @map("experience_time") // 'lt1' | '2' | '3plus'
+  availability        Json? // { days:[1..7], start:'08:00', end:'20:00' }
+  onboardingCompleted Boolean   @default(false) @map("onboarding_completed")
+  stripeAccountId     String?   @map("stripe_account_id")
+  approvalStatus      String    @default("approved") @map("approval_status") // 'approved' | 'pending' | 'rejected'
+  approvalNote        String?   @map("approval_note")
+  approvalRequestedAt DateTime? @map("approval_requested_at")
+  approvalReviewedAt  DateTime? @map("approval_reviewed_at")
+
+  posts        ProviderPost[]
+  certificates ProviderCertificate[]
+  catalogItems ProviderCatalog[]
+  withdrawals  Withdrawal[]
+
+  clientRequests        Request[]      @relation("ClientRequests")
+  providerRequests      Request[]      @relation("ProviderRequests")
+  clientPayments        Payment[]      @relation("ClientPayments")
+  providerPayments      Payment[]      @relation("ProviderPayments")
+  reviewsGiven          Review[]       @relation("ClientReviews")
+  reviewsReceived       Review[]       @relation("ProviderReviews")
+  clientReviewsGiven    ClientReview[] @relation("ProviderClientReviews")
+  clientReviewsReceived ClientReview[] @relation("ClientReceivedReviews")
+  clientChatRooms       ChatRoom[]     @relation("ClientChatRooms")
+  providerChatRooms     ChatRoom[]     @relation("ProviderChatRooms")
+  chatMessages          ChatMessage[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([role])
+  @@index([workArea])
+  @@index([approvalStatus, approvalRequestedAt(sort: Desc)])
+  @@map("profiles")
+}
+
+// ------------------------------------------------------------------------------
+// PROVIDER PORTFOLIO, CERTIFICATES & CATALOG
+// ------------------------------------------------------------------------------
+
+model ProviderPost {
+  id             String  @id @default(uuid())
+  providerId     String  @map("provider_id")
+  provider       Profile @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  imageUrl       String  @map("image_url")
+  caption        String?
+  highlightTitle String? @map("highlight_title")
+  postType       String  @default("post") @map("post_type") // 'post' | 'story'
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([providerId, createdAt(sort: Desc)])
+  @@map("provider_posts")
+}
+
+model ProviderCertificate {
+  id         String  @id @default(uuid())
+  providerId String  @map("provider_id")
+  provider   Profile @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  name       String?
+  fileUrl    String  @map("file_url")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([providerId, createdAt(sort: Desc)])
+  @@map("provider_certificates")
+}
+
+model ProviderCatalog {
+  id          String  @id @default(uuid())
+  providerId  String  @map("provider_id")
+  provider    Profile @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  priceAmount Int     @default(0) @map("price_amount") // Em Kwanzas (AOA)
+  currency    String  @default("AOA")
+  imageUrl    String? @map("image_url")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([providerId, createdAt(sort: Desc)])
+  @@map("provider_catalog")
+}
+
+model ProviderApplication {
+  id              String    @id @default(uuid())
+  name            String
+  phone           String
+  email           String?
+  city            String?
+  workArea        String    @map("work_area")
+  specialty       String?
+  experienceYears Int?      @map("experience_years")
+  description     String
+  photoUrl        String?   @map("photo_url")
+  idDocumentUrl   String?   @map("id_document_url")
+  status          String    @default("pending") // 'pending' | 'approved' | 'rejected'
+  note            String?
+  reviewedAt      DateTime? @map("reviewed_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([status, createdAt(sort: Desc)])
+  @@map("provider_applications")
+}
+
+// ------------------------------------------------------------------------------
+// SERVICE REQUESTS (BOOKINGS) & ESCROW
+// ------------------------------------------------------------------------------
+
+model Request {
+  id                String  @id @default(uuid())
+  clientId          String  @map("client_id")
+  client            Profile @relation("ClientRequests", fields: [clientId], references: [id], onDelete: Cascade)
+  clientName        String  @map("client_name")
+  clientAvatarUrl   String? @map("client_avatar_url")
+  providerId        String  @map("provider_id")
+  provider          Profile @relation("ProviderRequests", fields: [providerId], references: [id], onDelete: Cascade)
+  providerName      String  @map("provider_name")
+  providerAvatarUrl String? @map("provider_avatar_url")
+  serviceName       String  @map("service_name")
+  description       String
+  location          String?
+  serviceDate       String? @map("service_date")
+  serviceTime       String? @map("service_time")
+  status            String  @default("pending") // 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'completed'
+
+  // Pricing & Payment Gateways
+  priceAmount           Int?    @map("price_amount") // minor units
+  currency              String?
+  paymentStatus         String? @map("payment_status")
+  stripePaymentIntentId String? @map("stripe_payment_intent_id")
+  paymentMethod         String? @map("payment_method") // 'card' | 'gpay_multicaixa' | 'gpay_reference'
+  gpayTransactionId     String? @map("gpay_transaction_id")
+
+  // Timestamps de Estados
+  paidAt           DateTime? @map("paid_at")
+  acceptedAt       DateTime? @map("accepted_at")
+  rejectedAt       DateTime? @map("rejected_at")
+  cancelledAt      DateTime? @map("cancelled_at")
+  completedAt      DateTime? @map("completed_at")
+  reviewedAt       DateTime? @map("reviewed_at")
+  clientReviewedAt DateTime? @map("client_reviewed_at")
+  cancelReason     String?   @map("cancel_reason")
+  cancelledBy      String?   @map("cancelled_by") // 'client' | 'provider'
+
+  // Escrow & Taxas
+  isUrgent     Boolean   @default(false) @map("is_urgent")
+  escrowStatus String    @default("none") @map("escrow_status") // 'none' | 'held' | 'released' | 'refunded'
+  agreedAmount Int?      @map("agreed_amount")
+  clientTotal  Int?      @map("client_total")
+  requestFee   Int?      @map("request_fee")
+  serviceFee   Int?      @map("service_fee")
+  urgentBonus  Int?      @map("urgent_bonus")
+  providerNet  Int?      @map("provider_net")
+  platformNet  Int?      @map("platform_net")
+  releasedAt   DateTime? @map("released_at")
+
+  // Multi-day FlexPay (30/70)
+  isMultiDay             Boolean @default(false) @map("is_multi_day")
+  installmentsPaid       Int     @default(0) @map("installments_paid")
+  gpayPendingInstallment Int?    @map("gpay_pending_installment")
+  providerReleasedAmount Int?    @map("provider_released_amount")
+  providerHeldAmount     Int?    @map("provider_held_amount")
+
+  payments     Payment[]
+  review       Review?
+  clientReview ClientReview?
+  chatRoom     ChatRoom?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientId])
+  @@index([providerId])
+  @@index([status])
+  @@index([gpayTransactionId])
+  @@map("requests")
+}
+
+// ------------------------------------------------------------------------------
+// PAYMENTS & ESCROW TRANSACTIONS
+// ------------------------------------------------------------------------------
+
+model Payment {
+  id         String   @id @default(uuid())
+  requestId  String?  @unique @map("request_id")
+  request    Request? @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  clientId   String?  @map("client_id")
+  client     Profile? @relation("ClientPayments", fields: [clientId], references: [id], onDelete: Cascade)
+  providerId String?  @map("provider_id")
+  provider   Profile? @relation("ProviderPayments", fields: [providerId], references: [id], onDelete: Cascade)
+
+  amount                Int
+  currency              String    @default("AOA")
+  status                String // 'requires_payment_method' | 'processing' | 'succeeded' | 'canceled' | 'payment_failed'
+  stripePaymentIntentId String    @unique @map("stripe_payment_intent_id")
+  paidAt                DateTime? @map("paid_at")
+
+  // Escrow & Taxas Snapshot
+  isUrgent     Boolean   @default(false) @map("is_urgent")
+  escrowStatus String    @default("held") @map("escrow_status") // 'held' | 'released' | 'refunded'
+  agreedAmount Int?      @map("agreed_amount")
+  requestFee   Int?      @map("request_fee")
+  serviceFee   Int?      @map("service_fee")
+  urgentBonus  Int?      @map("urgent_bonus")
+  providerNet  Int?      @map("provider_net")
+  platformNet  Int?      @map("platform_net")
+  releasedAt   DateTime? @map("released_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([clientId])
+  @@index([providerId])
+  @@index([status])
+  @@map("payments")
+}
+
+// ------------------------------------------------------------------------------
+// WITHDRAWALS (SAQUES FLEXPAY)
+// ------------------------------------------------------------------------------
+
+model Withdrawal {
+  id               String    @id @default(uuid())
+  providerId       String    @map("provider_id")
+  provider         Profile   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  amount           Int // minor units
+  currency         String    @default("usd")
+  status           String    @default("processing") // 'processing' | 'paid' | 'failed' | 'cancelled'
+  method           String? // 'flex_pay' | 'bank'
+  requestedAt      DateTime  @default(now()) @map("requested_at")
+  estimatedArrival DateTime? @map("estimated_arrival")
+  paidAt           DateTime? @map("paid_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([providerId, createdAt(sort: Desc)])
+  @@map("withdrawals")
+}
+
+// ------------------------------------------------------------------------------
+// REVIEWS & REPUTATION
+// ------------------------------------------------------------------------------
+
+model Review {
+  id                    String   @id @default(uuid())
+  requestId             String   @unique @map("request_id")
+  request               Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  providerId            String   @map("provider_id")
+  provider              Profile  @relation("ProviderReviews", fields: [providerId], references: [id], onDelete: Cascade)
+  clientId              String   @map("client_id")
+  client                Profile  @relation("ClientReviews", fields: [clientId], references: [id], onDelete: Cascade)
+  clientAvatarUrl       String?  @map("client_avatar_url")
+  rating                Int // 1..5
+  comment               String?
+  wellExecuted          Boolean? @map("well_executed")
+  wouldRecommend        Boolean? @map("would_recommend")
+  inappropriateBehavior Boolean? @map("inappropriate_behavior")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([providerId])
+  @@index([clientId])
+  @@map("reviews")
+}
+
+model ClientReview {
+  id                String   @id @default(uuid())
+  requestId         String   @unique @map("request_id")
+  request           Request  @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  providerId        String   @map("provider_id")
+  provider          Profile  @relation("ProviderClientReviews", fields: [providerId], references: [id], onDelete: Cascade)
+  clientId          String   @map("client_id")
+  client            Profile  @relation("ClientReceivedReviews", fields: [clientId], references: [id], onDelete: Cascade)
+  providerAvatarUrl String?  @map("provider_avatar_url")
+  polite            Boolean?
+  changedScope      Boolean? @map("changed_scope")
+  rating            Int // 1..5
+  comment           String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([clientId])
+  @@index([providerId])
+  @@map("client_reviews")
+}
+
+// ------------------------------------------------------------------------------
+// SERVICE CATEGORIES & CATALOG DEFINITIONS
+// ------------------------------------------------------------------------------
+
+model ServiceCategory {
+  id          String  @id @default(uuid())
+  slug        String  @unique
+  name        String
+  description String?
+  icon        String?
+  isActive    Boolean @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("service_categories")
+}
+
+// ------------------------------------------------------------------------------
+// AUDIT LOGS & SYSTEM
+// ------------------------------------------------------------------------------
+
+model AuditLog {
+  id        String  @id @default(uuid())
+  userId    String? @map("user_id")
+  user      User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  entity    String
+  entityId  String? @map("entity_id")
+  details   Json?
+  ipAddress String? @map("ip_address")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([action])
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}
+
+model HealthCheck {
+  id        String   @id @default(uuid())
+  status    String   @default("OK")
+  timestamp DateTime @default(now())
+
+  @@map("health_checks")
+}
+
+// ------------------------------------------------------------------------------
+// CARDS & VIRTUAL WALLET
+// ------------------------------------------------------------------------------
+
+model Card {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cardNumber     String   @map("card_number")
+  lastFour       String   @map("last_four")
+  cardholderName String   @map("cardholder_name")
+  expiryMonth    Int      @map("expiry_month")
+  expiryYear     Int      @map("expiry_year")
+  brand          String   @default("Multicaixa") // 'Multicaixa' | 'Visa' | 'Mastercard'
+  cardType       String   @default("virtual") @map("card_type") // 'virtual' | 'physical'
+  balance        Int      @default(0) // Em Kwanzas (AOA)
+  currency       String   @default("AOA")
+  isDefault      Boolean  @default(true) @map("is_default")
+  isActive       Boolean  @default(true) @map("is_active")
+
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([userId, isDefault])
+  @@map("cards")
+}
+
+// ------------------------------------------------------------------------------
+// CHAT & REAL-TIME TEMPORARY CONVERSATIONS
+// ------------------------------------------------------------------------------
+
+model ChatRoom {
+  id         String    @id @default(uuid())
+  requestId  String    @unique @map("request_id")
+  request    Request   @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  clientId   String    @map("client_id")
+  client     Profile   @relation("ClientChatRooms", fields: [clientId], references: [id], onDelete: Cascade)
+  providerId String    @map("provider_id")
+  provider   Profile   @relation("ProviderChatRooms", fields: [providerId], references: [id], onDelete: Cascade)
+  status     String    @default("active") // 'active' | 'closed'
+  deletedAt  DateTime? @map("deleted_at") // Soft-delete após fecho/conclusão do serviço
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  messages ChatMessage[]
+
+  @@index([clientId])
+  @@index([providerId])
+  @@index([requestId])
+  @@index([deletedAt])
+  @@map("chat_rooms")
+}
+
+model ChatMessage {
+  id         String    @id @default(uuid())
+  chatRoomId String    @map("chat_room_id")
+  chatRoom   ChatRoom  @relation(fields: [chatRoomId], references: [id], onDelete: Cascade)
+  senderId   String    @map("sender_id")
+  sender     Profile   @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  senderRole String    @map("sender_role") // 'client' | 'provider' | 'admin'
+  content    String
+  readAt     DateTime? @map("read_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([chatRoomId, createdAt(sort: Asc)])
+  @@index([senderId])
+  @@map("chat_messages")
 }

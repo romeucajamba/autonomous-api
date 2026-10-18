@@ -1,0 +1,47 @@
+# Dependency directories
+node_modules
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Build output
+dist
+build
+coverage
+.nyc_output
+
+# Environment & local secret files
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Git and IDE files
+.git
+.gitignore
+.gitattributes
+.agents
+.claude
+.windsurf
+.vscode
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Testing and temp files
+test
+tests
+vitest.config.ts
+vitest.config.e2e.ts
+*.tsbuildinfo
+tmp
+temp
+
+# Documentation and notes
+README.md
+docs
+*.md
