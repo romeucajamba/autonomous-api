@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 
 describe('AuthService', () => {
@@ -14,12 +15,16 @@ describe('AuthService', () => {
   let mockJwtService: any;
   let mockConfigService: any;
   let mockRedisService: any;
+  let mockSmsService: any;
 
   beforeEach(() => {
     mockUsersService = {
       findByEmail: vi.fn(),
+      findByPhone: vi.fn(),
+      findByPhoneOrEmail: vi.fn(),
       findById: vi.fn(),
       create: vi.fn(),
+      activateUser: vi.fn(),
       updatePassword: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -43,6 +48,11 @@ describe('AuthService', () => {
       del: vi.fn().mockResolvedValue(1),
     };
 
+    mockSmsService = {
+      sendActivationCode: vi.fn().mockResolvedValue({ success: true }),
+      sendSms: vi.fn().mockResolvedValue({ success: true }),
+    };
+
     const mockAuditService = {
       log: vi.fn().mockResolvedValue(undefined),
     };
@@ -53,19 +63,21 @@ describe('AuthService', () => {
       mockConfigService,
       mockRedisService,
       mockAuditService as any,
+      mockSmsService,
     );
   });
 
   describe('register', () => {
-    it('deve registar um novo cliente com sucesso e devolver tokens', async () => {
+    it('deve registar um novo cliente com PENDING_VERIFICATION e enviar código OTP por SMS', async () => {
       mockUsersService.findByEmail.mockResolvedValue(null);
+      mockUsersService.findByPhone.mockResolvedValue(null);
       mockUsersService.create.mockResolvedValue({
         id: 'usr-123',
         email: 'cliente@teste.ao',
         name: 'Carlos Cliente',
         phone: '923000000',
         role: Role.CLIENT,
-        status: UserStatus.ACTIVE,
+        status: UserStatus.PENDING_VERIFICATION,
         passwordHash: 'hashed-pass',
         profile: { id: 'prof-123' },
       });
@@ -77,10 +89,16 @@ describe('AuthService', () => {
         phone: '923000000',
       });
 
-      expect(result.message).toBe('Registo efetuado com sucesso.');
+      expect(result.message).toContain('código de ativação de 6 dígitos');
+      expect(result.requiresActivation).toBe(true);
       expect(result.user.email).toBe('cliente@teste.ao');
-      expect(result.tokens.accessToken).toBe('signed-token-xyz');
-      expect(mockRedisService.set).toHaveBeenCalled();
+      expect(result.user.status).toBe(UserStatus.PENDING_VERIFICATION);
+      expect(mockSmsService.sendActivationCode).toHaveBeenCalledWith('923000000', expect.any(String));
+      expect(mockRedisService.set).toHaveBeenCalledWith(
+        'auth:sms_otp:usr-123',
+        expect.any(String),
+        600,
+      );
     });
 
     it('deve lançar ConflictException se o email já estiver registado', async () => {
@@ -91,12 +109,154 @@ describe('AuthService', () => {
           email: 'repetido@teste.ao',
           password: 'Password123!',
           name: 'Teste',
+          phone: '923111222',
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('deve lançar ConflictException se o telemóvel já estiver registado', async () => {
+      mockUsersService.findByEmail.mockResolvedValue(null);
+      mockUsersService.findByPhone.mockResolvedValue({ id: 'existing-phone-id' });
+
+      await expect(
+        authService.register({
+          email: 'novo@teste.ao',
+          password: 'Password123!',
+          name: 'Teste',
+          phone: '923111222',
         }),
       ).rejects.toThrow(ConflictException);
     });
   });
 
+  describe('activateAccount', () => {
+    it('deve ativar a conta com sucesso quando o código de 6 dígitos está correto', async () => {
+      mockUsersService.findByPhoneOrEmail.mockResolvedValue({
+        id: 'usr-123',
+        email: 'cliente@teste.ao',
+        phone: '923000000',
+        name: 'Carlos Cliente',
+        role: Role.CLIENT,
+        status: UserStatus.PENDING_VERIFICATION,
+        profile: { id: 'prof-123' },
+      });
+
+      mockRedisService.get.mockResolvedValue(JSON.stringify({ code: '654321', attempts: 0 }));
+      mockUsersService.activateUser.mockResolvedValue({
+        id: 'usr-123',
+        email: 'cliente@teste.ao',
+        phone: '923000000',
+        name: 'Carlos Cliente',
+        role: Role.CLIENT,
+        status: UserStatus.ACTIVE,
+      });
+
+      const result = await authService.activateAccount({
+        phoneOrEmail: '923000000',
+        code: '654321',
+      });
+
+      expect(result.message).toContain('Conta ativada com sucesso');
+      expect(result.tokens?.accessToken).toBe('signed-token-xyz');
+      expect(result.user?.status).toBe(UserStatus.ACTIVE);
+      expect(mockUsersService.activateUser).toHaveBeenCalledWith('usr-123');
+      expect(mockRedisService.del).toHaveBeenCalledWith('auth:sms_otp:usr-123');
+    });
+
+    it('deve lançar BadRequestException se o código estiver incorreto', async () => {
+      mockUsersService.findByPhoneOrEmail.mockResolvedValue({
+        id: 'usr-123',
+        email: 'cliente@teste.ao',
+        phone: '923000000',
+        status: UserStatus.PENDING_VERIFICATION,
+      });
+
+      mockRedisService.get.mockResolvedValue(JSON.stringify({ code: '654321', attempts: 0 }));
+
+      await expect(
+        authService.activateAccount({
+          phoneOrEmail: '923000000',
+          code: '000000',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('deve lançar BadRequestException se o código tiver expirado', async () => {
+      mockUsersService.findByPhoneOrEmail.mockResolvedValue({
+        id: 'usr-123',
+        email: 'cliente@teste.ao',
+        phone: '923000000',
+        status: UserStatus.PENDING_VERIFICATION,
+      });
+
+      mockRedisService.get.mockResolvedValue(null);
+
+      await expect(
+        authService.activateAccount({
+          phoneOrEmail: '923000000',
+          code: '654321',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('resendActivationCode', () => {
+    it('deve reenviar novo código SMS se não estiver em cooldown', async () => {
+      mockUsersService.findByPhoneOrEmail.mockResolvedValue({
+        id: 'usr-123',
+        email: 'cliente@teste.ao',
+        phone: '923000000',
+        name: 'Carlos Cliente',
+        status: UserStatus.PENDING_VERIFICATION,
+      });
+
+      mockRedisService.get.mockResolvedValue(null); // Sem cooldown
+
+      const result = await authService.resendActivationCode({
+        phoneOrEmail: '923000000',
+      });
+
+      expect(result.message).toContain('Novo código de ativação');
+      expect(mockSmsService.sendActivationCode).toHaveBeenCalledWith('923000000', expect.any(String));
+    });
+
+    it('deve rejeitar reenvio se cooldown de 60s estiver ativo', async () => {
+      mockUsersService.findByPhoneOrEmail.mockResolvedValue({
+        id: 'usr-123',
+        email: 'cliente@teste.ao',
+        phone: '923000000',
+        status: UserStatus.PENDING_VERIFICATION,
+      });
+
+      mockRedisService.get.mockResolvedValue('1'); // Cooldown ativo
+
+      await expect(
+        authService.resendActivationCode({
+          phoneOrEmail: '923000000',
+        }),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
   describe('login', () => {
+    it('deve lançar ForbiddenException se a conta estiver PENDING_VERIFICATION', async () => {
+      mockUsersService.findByEmail.mockResolvedValue({
+        id: 'usr-123',
+        email: 'pendente@teste.ao',
+        passwordHash: '$2b$10$abcdefghijklmnopqrstuvwxyz12345678901234567890',
+        status: UserStatus.PENDING_VERIFICATION,
+      });
+
+      vi.spyOn(authService as any, 'login');
+
+      await expect(
+        authService.login({
+          email: 'pendente@teste.ao',
+          password: 'Password123!',
+        }),
+      ).rejects.toThrow();
+    });
+
     it('deve lançar UnauthorizedException se as credenciais forem inválidas', async () => {
       mockUsersService.findByEmail.mockResolvedValue(null);
 

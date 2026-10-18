@@ -27,11 +27,11 @@ export class RegisterDto {
   @IsNotEmpty({ message: 'O nome é obrigatório.' })
   name: string;
 
-  @ApiPropertyOptional({
+  @ApiProperty({
     example: '923456789',
-    description: 'Número de telefone de contacto (Angola)',
+    description: 'Número de telemóvel para receber o código SMS de 6 dígitos de ativação da conta',
   })
-  @IsOptional()
-  @IsString({ message: 'O número de telefone deve ser válido.' })
-  phone?: string;
+  @IsNotEmpty({ message: 'O número de telemóvel é obrigatório para ativação da conta por SMS.' })
+  @IsString({ message: 'O número de telemóvel deve ser um texto válido.' })
+  phone: string;
 }

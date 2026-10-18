@@ -17,6 +17,7 @@ import { ProvidersModule } from '../modules/providers/providers.module.js';
 import { BookingsModule } from '../modules/bookings/bookings.module.js';
 import { ChatModule } from '../modules/chat/chat.module.js';
 import { ReviewsModule } from '../modules/reviews/reviews.module.js';
+import { SmsModule } from '../infra/sms/sms.module.js';
 
 import { validateEnv, env } from '../config/env.config.js';
 
@@ -68,6 +69,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     BookingsModule,
     ChatModule,
     ReviewsModule,
+    SmsModule,
   ],
   controllers: [AppController],
   providers: [

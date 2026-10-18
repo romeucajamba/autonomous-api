@@ -51,7 +51,9 @@ export const envSchema = z.object({
   JWT_REFRESH_EXPIRATION: z.string().default('7d'),
 
   // 5. CORS & Rate Limiting
-  CORS_ORIGIN: z.string().default('*'),
+  CORS_ORIGIN: z
+    .string()
+    .default('http://localhost:3000,http://localhost:5173,http://localhost:8080,capacitor://localhost'),
   THROTTLE_TTL: z.coerce.number().int().positive().default(60),
   THROTTLE_LIMIT: z.coerce.number().int().positive().default(100),
 
@@ -71,6 +73,11 @@ export const envSchema = z.object({
   // 9. Observabilidade & Métricas
   OBSERVE_APP_KEY: z.string().default('autonomous-key'),
   OBSERVE_APP_SECRET: z.string().default('autonomous-secret'),
+
+  // 10. Gateway de SMS Ombala (Angola)
+  OMBALA_BASE_URL: z.string().url(),
+  OMBALA_API_TOKEN: z.string(),
+  OMBALA_FROM: z.string(),
 });
 
 export type Env = z.infer<typeof envSchema>;

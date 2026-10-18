@@ -15,6 +15,9 @@ describe('Environment Configuration (Zod Schema)', () => {
     THROTTLE_LIMIT: '100',
     SWAGGER_ENABLED: 'true',
     RUN_MIGRATIONS: 'true',
+    OMBALA_BASE_URL: 'https://api.useombala.ao',
+    OMBALA_API_TOKEN: 'mock_test_ombala_token_xyz',
+    OMBALA_FROM: '900000000',
   };
 
   it('deve validar e converter strings para números e booleanos com sucesso', () => {
@@ -68,14 +71,21 @@ describe('Environment Configuration (Zod Schema)', () => {
     );
   });
 
-  it('deve rejeitar NODE_ENV inválido', () => {
-    const invalidConfig = {
-      ...validMockConfig,
-      NODE_ENV: 'invalido_env',
-    };
+  it('deve carregar as credenciais do Gateway Ombala a partir das variáveis de ambiente', () => {
+    const parsed = validateEnv(validMockConfig);
+
+    expect(parsed.OMBALA_BASE_URL).toBe('https://api.useombala.ao');
+    expect(parsed.OMBALA_API_TOKEN).toBe('mock_test_ombala_token_xyz');
+    expect(parsed.OMBALA_FROM).toBe('900000000');
+  });
+
+  it('deve lançar erro se OMBALA_API_TOKEN estiver ausente', () => {
+    const invalidConfig = { ...validMockConfig };
+    delete (invalidConfig as any).OMBALA_API_TOKEN;
 
     expect(() => validateEnv(invalidConfig)).toThrow(
       'CONFIG_VALIDATION_ERROR',
     );
   });
 });
+

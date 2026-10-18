@@ -25,6 +25,32 @@ export class UsersRepository {
     });
   }
 
+  async findByPhone(phone: string): Promise<(User & { profile: Profile | null }) | null> {
+    const raw = phone.trim();
+    const digitsOnly = raw.replace(/\D/g, '');
+    const local9Digits = digitsOnly.startsWith('244') ? digitsOnly.slice(3) : digitsOnly;
+    const candidates = Array.from(
+      new Set([raw, local9Digits, `+244${local9Digits}`, `244${local9Digits}`]),
+    ).filter(Boolean);
+
+    return this.prisma.user.findFirst({
+      where: {
+        phone: {
+          in: candidates,
+        },
+      },
+      include: { profile: true },
+    });
+  }
+
+  async findByPhoneOrEmail(identifier: string): Promise<(User & { profile: Profile | null }) | null> {
+    const clean = identifier.trim();
+    if (clean.includes('@')) {
+      return this.findByEmail(clean);
+    }
+    return this.findByPhone(clean);
+  }
+
   async findById(id: string): Promise<(User & { profile: Profile | null }) | null> {
     return this.prisma.user.findUnique({
       where: { id },
@@ -45,7 +71,7 @@ export class UsersRepository {
           name: data.name.trim(),
           phone: data.phone?.trim(),
           role,
-          status: UserStatus.ACTIVE,
+          status: data.status || UserStatus.ACTIVE,
         },
       });
 
@@ -123,4 +149,12 @@ export class UsersRepository {
       data: { passwordHash },
     });
   }
+
+  async updateStatus(userId: string, status: UserStatus): Promise<User> {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { status },
+    });
+  }
 }
+

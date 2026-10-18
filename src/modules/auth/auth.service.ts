@@ -4,17 +4,22 @@ import {
   UnauthorizedException,
   ForbiddenException,
   NotFoundException,
+  BadRequestException,
   Logger,
 } from '@nestjs/common';
+import crypto from 'node:crypto';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../users/users.service.js';
 import { RedisService } from '../../infra/redis/redis.service.js';
+import { SmsService } from '../../infra/sms/sms.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CryptoUtils } from '../../common/utils/crypto.utils.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { RegisterProviderDto } from './dto/register-provider.dto.js';
 import { LoginDto } from './dto/login.dto.js';
+import { ActivateAccountDto } from './dto/activate-account.dto.js';
+import { ResendActivationCodeDto } from './dto/resend-activation-code.dto.js';
 import { RefreshTokenDto } from './dto/refresh-token.dto.js';
 import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
 import { ResetPasswordDto } from './dto/reset-password.dto.js';
@@ -34,6 +39,7 @@ export class AuthService {
     private readonly configService: ConfigService,
     private readonly redisService: RedisService,
     private readonly auditService: AuditService,
+    private readonly smsService: SmsService,
   ) {
     this.jwtSecret =
       this.configService.get<string>('JWT_SECRET') ||
@@ -45,7 +51,7 @@ export class AuthService {
   }
 
   /**
-   * Registo de Cliente
+   * Registo de Cliente (Requer ativação por código SMS de 6 dígitos)
    */
   async register(dto: RegisterDto, ipAddress?: string) {
     const existing = await this.usersService.findByEmail(dto.email);
@@ -53,40 +59,49 @@ export class AuthService {
       throw new ConflictException('Já existe uma conta associada a este endereço de email.');
     }
 
+    if (dto.phone) {
+      const existingPhone = await this.usersService.findByPhone(dto.phone);
+      if (existingPhone) {
+        throw new ConflictException('Já existe uma conta associada a este número de telemóvel.');
+      }
+    }
+
     const passwordHash = await CryptoUtils.hashPassword(dto.password);
 
+    // Cliente inicia com PENDING_VERIFICATION para ativação obrigatória via SMS
     const user = await this.usersService.create({
       email: dto.email,
       passwordHash,
       name: dto.name,
       phone: dto.phone,
       role: Role.CLIENT,
-      status: UserStatus.ACTIVE,
+      status: UserStatus.PENDING_VERIFICATION,
       profileRole: 'client',
     });
 
-    const tokens = await this.generateTokens(user.id, user.email, user.role, user.profile?.id, user.name);
-    await this.storeRefreshToken(user.id, tokens.refreshToken);
+    // Enviar código OTP de 6 dígitos por SMS via Ombala
+    await this.generateAndSendOtp(user.id, user.phone, user.name);
 
     await this.auditService.log({
       userId: user.id,
       action: 'AUTH_REGISTER_CLIENT',
       entity: 'User',
       entityId: user.id,
-      details: { email: user.email, role: user.role, name: user.name },
+      details: { email: user.email, role: user.role, name: user.name, phone: user.phone },
       ipAddress,
     });
 
     const { passwordHash: _, ...safeUser } = user;
     return {
-      message: 'Registo efetuado com sucesso.',
+      message:
+        'Registo efetuado com sucesso! Enviámos um código de ativação de 6 dígitos por SMS para o seu telemóvel.',
+      requiresActivation: true,
       user: safeUser,
-      tokens,
     };
   }
 
   /**
-   * Registo de Prestador de Serviços
+   * Registo de Prestador de Serviços (Requer ativação por código SMS de 6 dígitos)
    */
   async registerProvider(dto: RegisterProviderDto, ipAddress?: string) {
     const existing = await this.usersService.findByEmail(dto.email);
@@ -94,22 +109,28 @@ export class AuthService {
       throw new ConflictException('Já existe uma conta associada a este endereço de email.');
     }
 
+    const existingPhone = await this.usersService.findByPhone(dto.phone);
+    if (existingPhone) {
+      throw new ConflictException('Já existe uma conta associada a este número de telemóvel.');
+    }
+
     const passwordHash = await CryptoUtils.hashPassword(dto.password);
 
+    // Prestador inicia com PENDING_VERIFICATION para ativação obrigatória via SMS
     const user = await this.usersService.create({
       email: dto.email,
       passwordHash,
       name: dto.name,
       phone: dto.phone,
       role: Role.PROVIDER,
-      status: UserStatus.ACTIVE,
+      status: UserStatus.PENDING_VERIFICATION,
       profileRole: 'professional',
       workArea: dto.workArea,
       bio: dto.bio,
     });
 
-    const tokens = await this.generateTokens(user.id, user.email, user.role, user.profile?.id, user.name);
-    await this.storeRefreshToken(user.id, tokens.refreshToken);
+    // Enviar código OTP de 6 dígitos por SMS via Ombala
+    await this.generateAndSendOtp(user.id, user.phone, user.name);
 
     await this.auditService.log({
       userId: user.id,
@@ -120,6 +141,7 @@ export class AuthService {
         email: user.email,
         role: user.role,
         name: user.name,
+        phone: user.phone,
         workArea: dto.workArea,
       },
       ipAddress,
@@ -127,10 +149,190 @@ export class AuthService {
 
     const { passwordHash: _, ...safeUser } = user;
     return {
-      message: 'Registo de prestador efetuado com sucesso.',
+      message:
+        'Registo de prestador efetuado com sucesso! Enviámos um código de ativação de 6 dígitos por SMS para o seu telemóvel.',
+      requiresActivation: true,
+      user: safeUser,
+    };
+  }
+
+  /**
+   * Ativação de conta com código SMS de 6 dígitos
+   */
+  async activateAccount(dto: ActivateAccountDto, ipAddress?: string) {
+    const user = await this.usersService.findByPhoneOrEmail(dto.phoneOrEmail);
+    if (!user) {
+      throw new NotFoundException('Utilizador não encontrado com o telefone ou email informado.');
+    }
+
+    if (user.status === UserStatus.ACTIVE) {
+      return {
+        message: 'A sua conta já se encontra ativa. Pode iniciar sessão normalmente.',
+        alreadyActive: true,
+      };
+    }
+
+    if (user.status === UserStatus.SUSPENDED) {
+      throw new ForbiddenException('A sua conta está suspensa. Por favor, contacte o suporte.');
+    }
+
+    const redisKey = `auth:sms_otp:${user.id}`;
+    const otpDataStr = await this.redisService.get<string>(redisKey);
+
+    if (!otpDataStr) {
+      throw new BadRequestException(
+        'O código de ativação expirou ou não existe. Por favor, solicite o reenvio de um novo código.',
+      );
+    }
+
+    let otpData: { code: string; attempts: number };
+    try {
+      otpData = JSON.parse(otpDataStr);
+    } catch {
+      otpData = { code: otpDataStr, attempts: 0 };
+    }
+
+    // Validação contra força bruta (máximo de 5 tentativas)
+    if (otpData.code !== dto.code.trim()) {
+      otpData.attempts = (otpData.attempts || 0) + 1;
+      if (otpData.attempts >= 5) {
+        await this.redisService.del(redisKey);
+        this.logger.warn(
+          `[SECURITY] Excedido o número máximo de tentativas de código OTP para o utilizador ${user.id} | IP: ${ipAddress || 'unknown'}`,
+        );
+        throw new BadRequestException(
+          'Excedeu o número máximo de tentativas inválidas. O código foi invalidado. Por favor, solicite o reenvio de um novo código.',
+        );
+      }
+      await this.redisService.set(redisKey, JSON.stringify(otpData), 600);
+      throw new BadRequestException('Código de ativação incorreto.');
+    }
+
+    // Código válido: remove o OTP do Redis
+    await this.redisService.del(redisKey);
+
+    // Ativa o utilizador na base de dados
+    const activatedUser = await this.usersService.activateUser(user.id);
+
+    // Gera os tokens de acesso e refresh para autenticação imediata
+    const tokens = await this.generateTokens(
+      activatedUser.id,
+      activatedUser.email,
+      activatedUser.role,
+      user.profile?.id,
+      activatedUser.name,
+    );
+    await this.storeRefreshToken(activatedUser.id, tokens.refreshToken);
+
+    await this.auditService.log({
+      userId: activatedUser.id,
+      action: 'AUTH_ACCOUNT_ACTIVATED_BY_SMS',
+      entity: 'User',
+      entityId: activatedUser.id,
+      details: {
+        email: activatedUser.email,
+        phone: activatedUser.phone,
+        role: activatedUser.role,
+      },
+      ipAddress,
+    });
+
+    this.logger.log(
+      `[AUTH] Conta ativada com sucesso via SMS OTP para o utilizador ${activatedUser.id} (${activatedUser.email})`,
+    );
+
+    const { passwordHash: _, ...safeUser } = { ...user, status: UserStatus.ACTIVE };
+    return {
+      message: 'Conta ativada com sucesso! A sua sessão foi iniciada.',
       user: safeUser,
       tokens,
     };
+  }
+
+  /**
+   * Reenvio de código de ativação por SMS
+   */
+  async resendActivationCode(dto: ResendActivationCodeDto, ipAddress?: string) {
+    const user = await this.usersService.findByPhoneOrEmail(dto.phoneOrEmail);
+    if (!user) {
+      throw new NotFoundException('Utilizador não encontrado com o telefone ou email informado.');
+    }
+
+    if (user.status === UserStatus.ACTIVE) {
+      throw new BadRequestException('A sua conta já se encontra ativa.');
+    }
+
+    if (user.status === UserStatus.SUSPENDED) {
+      throw new ForbiddenException('A sua conta está suspensa. Por favor, contacte o suporte.');
+    }
+
+    if (!user.phone) {
+      throw new BadRequestException(
+        'Este utilizador não possui um número de telemóvel associado para receber SMS.',
+      );
+    }
+
+    // Cooldown de 60 segundos para evitar spam ao gateway de SMS
+    const cooldownKey = `auth:sms_cooldown:${user.id}`;
+    const inCooldown = await this.redisService.get(cooldownKey);
+    if (inCooldown) {
+      throw new BadRequestException(
+        'Por favor, aguarde 60 segundos antes de solicitar um novo código de ativação por SMS.',
+      );
+    }
+
+    // Gera novo código e envia
+    await this.generateAndSendOtp(user.id, user.phone, user.name);
+
+    await this.auditService.log({
+      userId: user.id,
+      action: 'AUTH_RESEND_SMS_ACTIVATION',
+      entity: 'User',
+      entityId: user.id,
+      details: {
+        phone: user.phone,
+        email: user.email,
+      },
+      ipAddress,
+    });
+
+    return {
+      message: 'Novo código de ativação de 6 dígitos enviado por SMS com sucesso.',
+      phone: user.phone,
+    };
+  }
+
+  /**
+   * Gera código OTP criptograficamente seguro e envia por SMS via Ombala
+   */
+  private async generateAndSendOtp(
+    userId: string,
+    phone?: string | null,
+    name?: string,
+  ): Promise<string> {
+    if (!phone) {
+      this.logger.warn(`Utilizador ${userId} não possui número de telemóvel para envio de SMS OTP.`);
+      return '';
+    }
+
+    // Código numérico de 6 dígitos criptograficamente seguro (100000 - 999999)
+    const code = crypto.randomInt(100000, 1000000).toString();
+
+    // Armazenar no Redis com TTL de 10 minutos (600s)
+    const redisKey = `auth:sms_otp:${userId}`;
+    await this.redisService.set(redisKey, JSON.stringify({ code, attempts: 0 }), 600);
+
+    // Cooldown de 60 segundos
+    const cooldownKey = `auth:sms_cooldown:${userId}`;
+    await this.redisService.set(cooldownKey, '1', 60);
+
+    // Enviar SMS através do Gateway Ombala
+    await this.smsService.sendActivationCode(phone, code);
+
+    this.logger.log(
+      `[SMS_OTP] Código OTP de ativação enviado com sucesso para ${phone} (Utilizador ID: ${userId})`,
+    );
+    return code;
   }
 
   /**
@@ -159,6 +361,25 @@ export class AuthService {
         ipAddress,
       });
       throw new UnauthorizedException('Credenciais de acesso inválidas.');
+    }
+
+    // Bloqueia utilizadores com verificação de conta pendente (menos admin, que já é criado ativo)
+    if (user.status === UserStatus.PENDING_VERIFICATION) {
+      await this.auditService.log({
+        userId: user.id,
+        action: 'AUTH_LOGIN_BLOCKED',
+        entity: 'User',
+        entityId: user.id,
+        details: {
+          email: dto.email,
+          status: user.status,
+          reason: 'Conta pendente de ativação por SMS',
+        },
+        ipAddress,
+      });
+      throw new ForbiddenException(
+        'A sua conta está pendente de ativação por SMS. Por favor, confirme o código de 6 dígitos enviado para o seu telemóvel.',
+      );
     }
 
     if (user.status === UserStatus.SUSPENDED) {

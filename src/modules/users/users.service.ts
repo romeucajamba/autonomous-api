@@ -25,6 +25,18 @@ export class UsersService {
     return this.usersRepository.findByEmail(email);
   }
 
+  async findByPhone(phone: string): Promise<(User & { profile: Profile | null }) | null> {
+    return this.usersRepository.findByPhone(phone);
+  }
+
+  async findByPhoneOrEmail(identifier: string): Promise<(User & { profile: Profile | null }) | null> {
+    return this.usersRepository.findByPhoneOrEmail(identifier);
+  }
+
+  async activateUser(userId: string): Promise<User> {
+    return this.usersRepository.updateStatus(userId, 'ACTIVE' as any);
+  }
+
   async findById(id: string): Promise<User & { profile: Profile | null }> {
     const user = await this.usersRepository.findById(id);
     if (!user) {

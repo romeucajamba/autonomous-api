@@ -20,6 +20,8 @@ import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service.js';
 import { RegisterDto } from './dto/register.dto.js';
 import { RegisterProviderDto } from './dto/register-provider.dto.js';
+import { ActivateAccountDto } from './dto/activate-account.dto.js';
+import { ResendActivationCodeDto } from './dto/resend-activation-code.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RefreshTokenDto } from './dto/refresh-token.dto.js';
 import { ForgotPasswordDto } from './dto/forgot-password.dto.js';
@@ -41,11 +43,11 @@ export class AuthController {
   @ApiOperation({
     summary: 'Registo de novo Cliente',
     description:
-      'Cria uma nova conta de utilizador com papel CLIENT e perfil de cliente ativo. Devolve os dados do utilizador e o par de tokens JWT (access + refresh). Protegido contra abusos (máx 5 registos a cada 5 min).',
+      'Cria uma nova conta de utilizador com papel CLIENT e perfil de cliente com status PENDING_VERIFICATION. Dispara um código de 6 dígitos por SMS via Gateway Ombala para ativação da conta. Protegido contra abusos (máx 5 registos a cada 5 min).',
   })
   @ApiResponse({
     status: 201,
-    description: 'Cliente registado com sucesso e tokens gerados.',
+    description: 'Cliente registado com sucesso e código SMS enviado.',
   })
   @ApiResponse({
     status: 400,
@@ -53,7 +55,7 @@ export class AuthController {
   })
   @ApiResponse({
     status: 409,
-    description: 'Conflito — já existe uma conta associada a este endereço de email.',
+    description: 'Conflito — já existe uma conta associada a este endereço de email ou telefone.',
   })
   @ApiResponse({
     status: 429,
@@ -70,11 +72,11 @@ export class AuthController {
   @ApiOperation({
     summary: 'Registo de novo Prestador de Serviços',
     description:
-      'Cria uma nova conta com papel PROVIDER e perfil profissional com status de aprovação pendente. Requer telefone e especialidade/área de atuação. Protegido contra abusos (máx 5 registos a cada 5 min).',
+      'Cria uma nova conta com papel PROVIDER e status PENDING_VERIFICATION. Requer telefone e especialidade/área de atuação. Dispara um código de 6 dígitos por SMS via Gateway Ombala para ativação da conta. Protegido contra abusos (máx 5 registos a cada 5 min).',
   })
   @ApiResponse({
     status: 201,
-    description: 'Prestador registado com sucesso com perfil pendente de aprovação.',
+    description: 'Prestador registado com sucesso e código SMS enviado.',
   })
   @ApiResponse({
     status: 400,
@@ -82,7 +84,7 @@ export class AuthController {
   })
   @ApiResponse({
     status: 409,
-    description: 'Conflito — endereço de email já em uso.',
+    description: 'Conflito — endereço de email ou telefone já em uso.',
   })
   @ApiResponse({
     status: 429,
@@ -90,6 +92,64 @@ export class AuthController {
   })
   async registerProvider(@Body() dto: RegisterProviderDto, @Ip() ip: string) {
     return this.authService.registerProvider(dto, ip);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 300000 } })
+  @Post('activate-account')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Ativação de conta por código SMS (OTP de 6 dígitos)',
+    description:
+      'Valida o código de verificação de 6 dígitos enviado por SMS para o telemóvel do utilizador após o registo. Ativa a conta (status ACTIVE) e devolve a sessão com os tokens JWT (access + refresh). Protegido contra tentativas de força bruta (máx 5 erros por código).',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Conta ativada com sucesso e sessão iniciada.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Código de ativação inválido, expirado ou formato incorreto.',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Utilizador não encontrado com o telefone ou email informado.',
+  })
+  @ApiResponse({
+    status: 429,
+    description: 'Demasiadas tentativas de ativação. Aguarde alguns minutos.',
+  })
+  async activateAccount(@Body() dto: ActivateAccountDto, @Ip() ip: string) {
+    return this.authService.activateAccount(dto, ip);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 3, ttl: 300000 } })
+  @Post('resend-activation-code')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reenviar código de ativação por SMS',
+    description:
+      'Gera um novo código OTP de 6 dígitos e despacha via SMS para o telemóvel associado à conta. Possui cooldown de 60 segundos entre solicitações para evitar abusos.',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Novo código de ativação enviado com sucesso por SMS.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Conta já se encontra ativa, não possui telefone cadastrado ou cooldown de 60 segundos ativo.',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Utilizador não encontrado.',
+  })
+  @ApiResponse({
+    status: 429,
+    description: 'Demasiadas solicitações de reenvio. Aguarde alguns minutos.',
+  })
+  async resendActivationCode(@Body() dto: ResendActivationCodeDto, @Ip() ip: string) {
+    return this.authService.resendActivationCode(dto, ip);
   }
 
   @Public()
